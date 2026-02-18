@@ -1,3 +1,35 @@
+"""
+Nested Sampling Retrieval with LCPS Constraints
+================================================
+
+This module performs Bayesian inference to retrieve atmospheric particle
+refractive indices from Pioneer Venus Nephelometer measurements using
+nested sampling, with particle size distributions fixed to LCPS values.
+
+In this "withLCPS" mode, only 9 parameters are retrieved (refractive index
+parameters for up to 3 modes), while particle size distributions are
+constrained by LCPS (Large Probe Cloud Particle Size Spectrometer) measurements.
+
+This approach reduces the parameter space dimensionality, which can improve
+convergence and reduce computational cost when LCPS constraints are appropriate.
+
+Usage
+-----
+Single layer:
+    python NS_withLCPS_Layer_Matrix_Retrieval.py --task_id 1
+
+Output
+------
+Posterior samples saved to:
+    NS_{probe}_MultipleRI_HyperMatrix_Layer_{type}_numL{nlive}/
+        PosteriorDistributions/PosDistLayer{i}.csv
+
+Notes
+-----
+The number of active modes (1-3) is determined automatically based on
+which modes have valid LCPS parameters for each altitude layer.
+"""
+
 import numpy as np
 import scipy.stats
 import csv
@@ -21,7 +53,10 @@ from scipy.optimize import fsolve
 import logging
 import argparse
 
-#Nested Sampling Variables
+
+# =============================================================================
+# Nested Sampling Configuration
+# =============================================================================
 rstate = np.random.default_rng(56101)
 n_Live = 900# Num of points we are runing the NS for
 type_s = 'Dynamic' # Options: 'Static', 'Dynamic' or 'Both'
@@ -262,13 +297,38 @@ def log_likelihood_bivar(thet, y_data, max_diff, X, Y, Isca):
         ll = -0.5 * np.sum((y_data - model) ** 2 / sigma2 + np.log(2 * np.pi * sigma2))
     return ll
 
-def log_likelihood_bivar_MultiRI(thet,part_dis, y_data, max_diff, X, Y, Isca):
-    # if not hasattr(log_likelihood_bivar_MultiRI, 'call_count'):
-    #     log_likelihood_bivar_MultiRI.call_count = 0
-    # log_likelihood_bivar_MultiRI.call_count += 1
-    #
-    # if log_likelihood_bivar_MultiRI.call_count % 10 == 0:
-    #     print(f"Likelihood called {log_likelihood_bivar_MultiRI.call_count} times")
+def log_likelihood_bivar_MultiRI(thet, part_dis, y_data, max_diff, X, Y, Isca):
+    """
+    Compute log-likelihood with LCPS-constrained particle distributions.
+
+    Similar to log_likelihood_bivar, but the particle size distribution
+    parameters are fixed from LCPS measurements. Only refractive index
+    parameters are varied.
+
+    Parameters
+    ----------
+    thet : array-like
+        Refractive index parameters only (3*n_modes values):
+        [rho1, sigr1, mur1, rho2, sigr2, mur2, ...]
+    part_dis : array-like
+        Fixed particle size distribution parameters from LCPS:
+        [n1, sig1, mu1, n2, sig2, mu2, n3, sig3, mu3]
+    y_data : array-like
+        Observed scattering intensity values.
+    max_diff : float
+        Maximum difference in observations (for error estimation).
+    X : ndarray
+        Particle size grid.
+    Y : ndarray
+        Refractive index grid.
+    Isca : ndarray
+        Pre-computed scattering matrix.
+
+    Returns
+    -------
+    float
+        Log-likelihood value. Returns -inf for invalid parameters.
+    """
     min_sig = 0.000005  # detector sensitivity limit
     layer_arr = np.hstack((part_dis, thet))
     # print(layer_arr)
@@ -286,21 +346,60 @@ def log_likelihood_bivar_MultiRI(thet,part_dis, y_data, max_diff, X, Y, Isca):
     # print(model, ll)
     return ll
 def prior_Pioneer(utheta):
+    """
+    Simple uniform prior for refractive index parameters.
+
+    Maps unit hypercube samples to uniform distribution over
+    refractive index range [1.25, 2.00].
+
+    Parameters
+    ----------
+    utheta : array-like
+        Samples from unit hypercube.
+
+    Returns
+    -------
+    list
+        Refractive index values in range [1.25, 2.00].
+    """
     ri_x = utheta
     ppf_r = []
     for i in range(len(ri_x)):
         ppf_i = 1.25 + ri_x[i] * 0.75
         ppf_r.append(ppf_i)
     return ppf_r
-def prior_Multiri(utheta,n_modes):
-    # rho1, sigr1, mur1, rho2, sigr2, mur2, rho3, sigr3, mur3 = utheta
-    # if not hasattr(prior_Multiri, 'call_count'):
-    #     prior_Multiri.call_count = 0
-    # prior_Multiri.call_count += 1
-    #
-    # if prior_Multiri.call_count % 10 == 0:  # Print every 100 calls
-    #     print(f"Prior function called {prior_Multiri.call_count} times")
-    ppf_r=[]
+
+
+def prior_Multiri(utheta, n_modes):
+    """
+    Transform unit hypercube to refractive index parameter space.
+
+    Prior for LCPS-constrained retrieval where only refractive index
+    parameters are varied (particle sizes are fixed).
+
+    Parameters
+    ----------
+    utheta : array-like
+        Samples from unit hypercube, shape (3*n_modes,).
+    n_modes : int
+        Number of active particle modes (1, 2, or 3).
+
+    Returns
+    -------
+    list
+        Refractive index parameters for each mode:
+        [rho1, sigr1, mur1, rho2, sigr2, mur2, ...]
+
+    Notes
+    -----
+    Prior specifications for each mode:
+    - rho (correlation): Uniform [-0.999, 0.999]
+    - sigma_r (RI width): Uniform, mode-dependent range
+        - Mode 2 (Gaussian): [0.0005, 0.2005]
+        - Modes 1, 3 (log-normal): [1.0005, 2.2505]
+    - mu_r (mean RI): Truncated normal N(1.43, 0.065) on [1.25, 2.00]
+    """
+    ppf_r = []
     # All uniform distributions
     for m in range(n_modes):
         idx=m*3
@@ -329,9 +428,24 @@ def prior_Multiri(utheta,n_modes):
 
 # def prior_hyper_MultiRI(utheta):
 #     n1, sig1, mu1, n2, sig2, mu2, n3, sig3, mu3, rho1, sigr1, mur1, rho2, sigr2, mur2, rho3, sigr3, mur3, N = utheta
-def create_matrices_directory_MultiRI(ri_matrix, weight_matrix,n_modes):
-    # pos_dis = os.path.join(base_path, "PosDistLayer{}.csv".format(layer_num))
-    # Get the dimensions of both matrices
+def create_matrices_directory_MultiRI(ri_matrix, weight_matrix, n_modes):
+    """
+    Format refractive index posterior samples for CSV export.
+
+    Parameters
+    ----------
+    ri_matrix : array-like
+        Transposed posterior samples, shape (3*n_modes, n_samples).
+    weight_matrix : array-like
+        Sample weights.
+    n_modes : int
+        Number of active particle modes (1, 2, or 3).
+
+    Returns
+    -------
+    dict
+        Dictionary with parameter names and sample arrays.
+    """
     ri_rows, ri_cols = len(ri_matrix[0]), len(ri_matrix)
 
     # Create column names

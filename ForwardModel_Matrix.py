@@ -1,3 +1,23 @@
+"""
+Forward Model Matrix Generation for Pioneer Venus Nephelometer
+===============================================================
+
+This module generates pre-computed Mie scattering intensity matrices for
+efficient Bayesian retrieval of atmospheric particle properties from
+Pioneer Venus Nephelometer measurements.
+
+The forward model computes the expected scattering signal as a function of:
+- Particle size (diameter in microns)
+- Complex refractive index (real part)
+
+The matrices are saved as NumPy arrays for fast loading during retrieval.
+
+References
+----------
+- Mie scattering theory implementation via miepython
+- Pioneer Venus Nephelometer instrument specifications from mission documentation
+"""
+
 import numpy as np
 import scipy.stats
 import csv
@@ -8,15 +28,97 @@ import os.path
 from matplotlib import image
 import pandas as pd
 
-# Pioneer Variables
-lamb = 0.9
-inst_unit_Neph = 5 * 10 ** -6
-min_size = 0.3
-max_size = 20.0
+# =============================================================================
+# Pioneer Venus Nephelometer Constants
+# =============================================================================
+
+lamb = 0.9  # Wavelength in microns
+inst_unit_Neph = 5e-6  # Instrument calibration constant
+min_size = 0.3  # Minimum particle diameter (microns)
+max_size = 20.0  # Maximum particle diameter (microns)
+
+
+# =============================================================================
 # Forward Model Functions
+# =============================================================================
+
 def deg_to_rad(ang):
+    """
+    Convert angle from degrees to radians.
+
+    Parameters
+    ----------
+    ang : float or ndarray
+        Angle(s) in degrees.
+
+    Returns
+    -------
+    float or ndarray
+        Angle(s) in radians.
+    """
     return ang * np.pi / 180
-def matrix_Pioneer(lambda0, a_Theta, a_f, min_a=0.3, max_a=20.0, step_a=0.001, min_ri=1.25, max_ri=2.00, step_ri=0.001, inst_const=inst_unit_Neph):
+
+
+def matrix_Pioneer(lambda0, a_Theta, a_f, min_a=0.3, max_a=20.0, step_a=0.001,
+                   min_ri=1.25, max_ri=2.00, step_ri=0.001, inst_const=inst_unit_Neph):
+    """
+    Generate Mie scattering intensity matrices for the Pioneer Nephelometer.
+
+    Computes the scattering coefficient (beta) as a function of particle size
+    and refractive index, integrated over the instrument's angular response
+    function. The resulting matrices can be used for fast forward model
+    evaluation during Bayesian inference.
+
+    Parameters
+    ----------
+    lambda0 : float
+        Wavelength of incident light in microns.
+    a_Theta : array-like
+        Scattering angles in degrees from the instrument response function.
+    a_f : array-like
+        Angular response function F(theta) values corresponding to a_Theta.
+    min_a : float, optional
+        Minimum particle diameter in microns. Default is 0.3.
+    max_a : float, optional
+        Maximum particle diameter in microns. Default is 20.0.
+    step_a : float, optional
+        Step size for particle diameter grid in microns. Default is 0.001.
+    min_ri : float, optional
+        Minimum refractive index. Default is 1.25.
+    max_ri : float, optional
+        Maximum refractive index. Default is 2.00.
+    step_ri : float, optional
+        Step size for refractive index grid. Default is 0.001.
+    inst_const : float, optional
+        Instrument calibration constant. Default is 5e-6.
+
+    Returns
+    -------
+    X : ndarray
+        2D meshgrid of particle sizes (microns), shape (n_ri, n_a).
+    Y : ndarray
+        2D meshgrid of refractive indices, shape (n_ri, n_a).
+    I_scat : ndarray
+        Scattering intensity matrix, shape (n_ri, n_a).
+
+    Notes
+    -----
+    The scattering coefficient beta is computed as:
+
+        beta = I_unpol * sigma * inst_const
+
+    where:
+    - I_unpol is the unpolarized Mie scattering intensity
+    - sigma = Q_sca * pi * (a/2)^2 is the scattering cross-section
+    - inst_const is the instrument calibration factor
+
+    The total intensity integrates over the angular response function.
+
+    Examples
+    --------
+    >>> X, Y, Isca = matrix_Pioneer(0.9, angles, response_fn)
+    >>> np.save('Isca_matrix.npy', Isca)
+    """
     theta = a_Theta
     rad_theta = deg_to_rad(theta)
     mu = np.cos(rad_theta)

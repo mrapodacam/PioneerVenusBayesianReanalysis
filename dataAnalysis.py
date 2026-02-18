@@ -1,3 +1,36 @@
+"""
+Data Analysis and Visualization for Venus Atmospheric Retrieval
+================================================================
+
+This module provides comprehensive post-processing and visualization tools
+for analyzing posterior distributions from the nested sampling retrieval.
+
+Key Features
+------------
+- Load and process posterior samples with importance weights
+- Compute weighted statistics (mean, mode, quantiles)
+- Generate corner plots for multi-dimensional posterior visualization
+- Create ridge plots for comparing distributions across layers
+- Apply prior re-weighting for Bayesian model comparison
+- Produce publication-quality figures
+
+Configuration
+-------------
+The module uses configuration variables at the top to control:
+- Which probe data to analyze
+- Plotting options (show/save flags)
+- Prior specifications for re-weighting
+- Visualization parameters (colors, fonts, bin sizes)
+
+Usage
+-----
+1. Set configuration variables for your analysis
+2. Run: python dataAnalysis.py
+
+Or import functions for custom analysis:
+    from dataAnalysis import read_PostDist_CSV, quantile
+"""
+
 import numpy as np
 import scipy.stats
 import csv
@@ -24,7 +57,10 @@ from scipy.signal import find_peaks
 from matplotlib import image
 from itertools import zip_longest
 
-#Nested Sampling Variables
+
+# =============================================================================
+# Configuration Variables
+# =============================================================================
 rstate = np.random.default_rng(56101)
 n_Live = 1800# Num of points we are runing the NS for (MultiRI=900, NoLCPS=1800)
 type_s = 'Dynamic' # Options: 'Static', 'Dynamic' or 'Both'
@@ -200,8 +236,44 @@ prior_unc_n = 550
 prior_sig_n = 1
 
 
-#Read Data Functions
-def read_PostDist_CSV(file_j, n_modes,type_p=type_p,type_a=type_a, a_strat=analysis_strat):#,type_s=type_s,probe=probe,n_live=n_Live):
+# =============================================================================
+# Data I/O Functions
+# =============================================================================
+
+def read_PostDist_CSV(file_j, n_modes, type_p=type_p, type_a=type_a, a_strat=analysis_strat):
+    """
+    Read posterior distribution samples from CSV file.
+
+    Loads posterior samples and weights from nested sampling output,
+    applying exponential transformation to log-weights.
+
+    Parameters
+    ----------
+    file_j : str
+        Path to the posterior distribution CSV file.
+    n_modes : int
+        Number of particle modes (1, 2, or 3).
+    type_p : str, optional
+        Retrieval type: 'MultipleRI' (LCPS-constrained) or 'NoLCPS' (free).
+    type_a : str, optional
+        Analysis type. Default is 'HyperMatrix'.
+    a_strat : str, optional
+        Analysis strategy: 'Layer' or 'independent'.
+
+    Returns
+    -------
+    sample_data : ndarray
+        Posterior samples, shape (n_samples, n_params).
+    weights : ndarray
+        Normalized importance weights (exponentiated).
+    header : ndarray
+        Column names for each parameter.
+
+    Examples
+    --------
+    >>> samples, weights, headers = read_PostDist_CSV('PosDistLayer5.csv', n_modes=3)
+    >>> weighted_mean = np.average(samples, weights=weights, axis=0)
+    """
     # if probe== 'sounder':
     #     paths = os.path.join(data_dir, f"NS_{probe}_{type_p}_{type_a}_{a_strat}_{type_s}_numL{n_live}")
     # else:
@@ -227,7 +299,36 @@ def read_PostDist_CSV(file_j, n_modes,type_p=type_p,type_a=type_a, a_strat=analy
         #     cols_names = [f'{param} {i + 1}' for i in range(n_modes) for param in ['n','sig','mu','rho', 'sigr', 'mur']]
     header = np.concatenate((cols_names, ['Weight']))
     return sample_data, weights, header
-def read_myPostDist_CSV(file_j, n_modes,type_p=type_p,type_a=type_a, a_strat=analysis_strat):#,type_s=type_s,probe=probe,n_live=n_Live):
+def read_myPostDist_CSV(file_j, n_modes, type_p=type_p, type_a=type_a, a_strat=analysis_strat):
+    """
+    Read posterior samples without exponentiating weights.
+
+    Alternative to read_PostDist_CSV that keeps weights in log form.
+    Use this when weights have already been exponentiated or for
+    custom weight handling.
+
+    Parameters
+    ----------
+    file_j : str
+        Path to the posterior distribution CSV file.
+    n_modes : int
+        Number of particle modes.
+    type_p : str, optional
+        Retrieval type.
+    type_a : str, optional
+        Analysis type.
+    a_strat : str, optional
+        Analysis strategy.
+
+    Returns
+    -------
+    sample_data : ndarray
+        Posterior samples.
+    weights : ndarray
+        Raw weights (not exponentiated).
+    header : ndarray
+        Column names.
+    """
     # if probe== 'sounder':
     #     paths = os.path.join(data_dir, f"NS_{probe}_{type_p}_{type_a}_{a_strat}_{type_s}_numL{n_live}")
     # else:
@@ -254,6 +355,24 @@ def read_myPostDist_CSV(file_j, n_modes,type_p=type_p,type_a=type_a, a_strat=ana
     header = np.concatenate((cols_names, ['Weight']))
     return sample_data, weights, header
 def read_LCPS_Vals(data_dir):
+    """
+    Read LCPS reference particle size distributions.
+
+    Parameters
+    ----------
+    data_dir : str
+        Base directory containing WorkData folder.
+
+    Returns
+    -------
+    size_dis : list of tuples
+        Each tuple contains (NT1, S1, M1, NT2, S2, M2, NT3, S3, M3)
+        for one cloud layer.
+    array_MinAlt : ndarray
+        Minimum altitudes for each layer (km).
+    array_MaxAlt : ndarray
+        Maximum altitudes for each layer (km).
+    """
     file_path = os.path.join(data_dir, "WorkData")
     file_dis = os.path.join(file_path, r'LPSC_distribution.csv')
     # Read the distribution file
@@ -269,9 +388,35 @@ def read_LCPS_Vals(data_dir):
     size_dis = list(zip(NT1, S1, M1, NT2, S2, M2, NT3, S3, M3))
     return size_dis, array_MinAlt, array_MaxAlt
 
-# Supporting Functions
-def find_weighted_mode(data,weights):
-    # Assume the last column is the weight
+# =============================================================================
+# Statistical Functions
+# =============================================================================
+
+def find_weighted_mode(data, weights):
+    """
+    Find the mode of weighted samples.
+
+    Identifies the most probable observation by aggregating weights
+    for identical samples.
+
+    Parameters
+    ----------
+    data : array-like
+        Sample observations, shape (n_samples, n_params).
+    weights : array-like
+        Importance weights for each sample.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping observations (as tuples) to cumulative weights,
+        sorted by weight in descending order.
+
+    Notes
+    -----
+    For continuous parameters, consider using KDE-based mode estimation
+    instead, as exact matches may be rare.
+    """
     observations = data
     weights = weights
 
@@ -449,9 +594,35 @@ def normalize(arr, t_min, t_max):
         temp = (i - t_min) / diff
         norm_arr.append(temp)
     return norm_arr
-# Adding New Prior Functions
+# =============================================================================
+# Prior Distribution Functions
+# =============================================================================
+
 def trucatedNormal_Prior_distribution(value_array):
-    mu_val, err_val, min_val, max_val, step_dec=value_array
+    """
+    Generate truncated normal prior distribution.
+
+    Creates a probability distribution over a specified range using
+    a truncated normal distribution.
+
+    Parameters
+    ----------
+    value_array : tuple
+        (mu, sigma, min_val, max_val, decimal_places)
+        - mu: Mean of the normal distribution
+        - sigma: Standard deviation
+        - min_val: Lower bound
+        - max_val: Upper bound
+        - decimal_places: Grid resolution (10^-decimal_places)
+
+    Returns
+    -------
+    x : ndarray
+        Parameter values on the grid.
+    prob_x : ndarray
+        Prior probability density at each x value.
+    """
+    mu_val, err_val, min_val, max_val, step_dec = value_array
     # print(mu_val, err_val, min_val, max_val, step_dec)
     num_par = int(np.ceil(np.abs(max_val - min_val) / (10 ** (-step_dec))))
     x = np.linspace(min_val, max_val, num_par)
@@ -462,7 +633,33 @@ def trucatedNormal_Prior_distribution(value_array):
     low_n3, high_n3 = (low3 - m3) / s3, (high3 - m3) / s3  # standardize
     prob_x = scipy.stats.truncnorm.pdf(x, low_n3, high_n3, loc=m3, scale=s3)
     return x, prob_x
-def stepUniform_Prior_distribution(value_array,n=prior_ratio):
+def stepUniform_Prior_distribution(value_array, n=prior_ratio):
+    """
+    Generate stepped uniform prior distribution.
+
+    Creates a prior with higher probability in a central region
+    and lower (but non-zero) probability elsewhere.
+
+    Parameters
+    ----------
+    value_array : tuple
+        (mu, half_width, min_val, max_val, decimal_places)
+    n : float, optional
+        Ratio of probability in central region vs. tails.
+        Default is prior_ratio (100).
+
+    Returns
+    -------
+    x : ndarray
+        Parameter values.
+    prob : ndarray
+        Prior probability density (normalized).
+
+    Notes
+    -----
+    This creates a "top-hat" style prior that gives preference to
+    values near mu while still allowing exploration of the full range.
+    """
     mu_val, err_val, min_val, max_val, step_dec = value_array
     # print(mu_val, err_val, min_val, max_val, step_dec)
     num_par = int(np.ceil(np.abs(max_val - min_val) / (10 ** (-step_dec))))
@@ -480,15 +677,36 @@ def stepUniform_Prior_distribution(value_array,n=prior_ratio):
     prob = prob / np.sum(prob)
     return x,prob
 def truncatedLogNormal_Prior_distribution(value_array):
+    """
+    Generate truncated log-normal prior distribution.
+
+    Parameters
+    ----------
+    value_array : tuple
+        (mode, median, min_val, max_val, decimal_places)
+        The mode and median are used to derive the underlying
+        normal distribution parameters.
+
+    Returns
+    -------
+    x : ndarray
+        Parameter values on the grid.
+    prob : ndarray
+        Prior probability density.
+
+    Raises
+    ------
+    ValueError
+        If min_val <= 0 (log-normal requires positive values).
+
+    Notes
+    -----
+    Uses the mode and median to compute mu and sigma of the
+    underlying normal distribution in log-space.
+    """
     mu_val, err_val, min_val, max_val, step_dec = value_array
-    # print(mu_val, err_val, min_val, max_val, step_dec)
     num_par = int(np.ceil(np.abs(max_val - min_val) / (10 ** (-step_dec))))
     x = np.linspace(min_val, max_val, num_par)
-
-    # Truncated Lognormal
-    # mu_val and err_val are the mean and std of the underlying normal distribution
-    # (not the mean and std of the lognormal distribution itself)
-    # low_bound, high_bound = min_val, max_val
 
     # For lognormal, we need x > 0, so ensure min_val > 0
     if min_val <= 0:

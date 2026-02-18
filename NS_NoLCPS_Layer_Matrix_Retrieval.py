@@ -1,3 +1,37 @@
+"""
+Nested Sampling Retrieval without LCPS Constraints
+===================================================
+
+This module performs Bayesian inference to retrieve atmospheric particle
+properties from Pioneer Venus Nephelometer measurements using nested sampling.
+
+In this "NoLCPS" mode, all 18 parameters are freely retrieved:
+- 9 particle size distribution parameters (3 modes x 3 params each)
+- 9 refractive index distribution parameters (3 modes x 3 params each)
+
+The retrieval uses the Dynesty nested sampling package with support for
+static, dynamic, or combined sampling strategies.
+
+Usage
+-----
+Single layer:
+    python NS_NoLCPS_Layer_Matrix_Retrieval.py --task_id 1
+
+HPC batch (via SLURM):
+    sbatch process_all_layers_NoLCPS.sh
+
+Output
+------
+Posterior samples saved to:
+    NS_{probe}_NoLCPS_HyperMatrix_Layer_{type}_numL{nlive}_new/
+        PosteriorDistributions/PosDistLayer{i}.csv
+
+Notes
+-----
+Each cloud layer is processed independently. The retrieval can be resumed
+from checkpoints if interrupted.
+"""
+
 import numpy as np
 import scipy.stats
 import csv
@@ -21,7 +55,10 @@ from scipy.optimize import fsolve
 import logging
 import argparse
 
-#Nested Sampling Variables
+
+# =============================================================================
+# Nested Sampling Configuration
+# =============================================================================
 rstate = np.random.default_rng(56101)
 n_Live = 1800# Num of points we are runing the NS for
 type_s = 'Dynamic' # Options: 'Static', 'Dynamic' or 'Both'
@@ -39,17 +76,72 @@ max_size = 20.0
 probe= 'sounder' # Options are: 'sounder', 'day', 'night', 'north'
 n_ref= 14# Options are [14, 5, 4, 2] respectively
 
-# Functions for Data Preping
-def baseline(arr_A,arr_S,min_a=2.5,max_a=30):
+# =============================================================================
+# Data Preprocessing Functions
+# =============================================================================
+
+def baseline(arr_A, arr_S, min_a=2.5, max_a=30):
+    """
+    Remove instrumental baseline from scattering measurements.
+
+    Computes the mean scattering intensity in a clear atmosphere altitude
+    range and subtracts it from all measurements.
+
+    Parameters
+    ----------
+    arr_A : array-like
+        Altitude values in km.
+    arr_S : array-like
+        Raw scattering intensity values.
+    min_a : float, optional
+        Minimum altitude for baseline calculation. Default is 2.5 km.
+    max_a : float, optional
+        Maximum altitude for baseline calculation. Default is 30 km.
+
+    Returns
+    -------
+    ndarray
+        Baseline-corrected scattering intensities.
+
+    Notes
+    -----
+    The baseline region (2.5-30 km) is chosen to be below the main cloud
+    deck where particle scattering is minimal.
+    """
     array_av = []
     for i, a in enumerate(arr_A):
         if min_a < a < max_a:
             array_av.append(arr_S[i])
     mean_av = np.mean(np.array(array_av))
-    # print(mean_av)
     arr_S = arr_S - mean_av
     return arr_S
-def prep_int(n_probe,ref):
+
+
+def prep_int(n_probe, ref):
+    """
+    Load and preprocess probe scattering measurements.
+
+    Reads nephelometer data from CSV, removes calibration points,
+    and applies baseline correction.
+
+    Parameters
+    ----------
+    n_probe : str
+        Probe identifier: 'sounder', 'day', 'night', or 'north'.
+    ref : int
+        Number of initial calibration points to remove.
+
+    Returns
+    -------
+    array_Ad : ndarray
+        Altitude values in km.
+    array_Sd : ndarray
+        Baseline-corrected scattering intensities.
+
+    Examples
+    --------
+    >>> altitudes, scattering = prep_int('sounder', 14)
+    """
     ProbeSA = os.path.join(file_path, f"{n_probe}_Probe_scatVA_new.csv")
     dfSA = pd.read_csv(ProbeSA)
     array_Sd = dfSA['Scattering'].values
@@ -57,8 +149,31 @@ def prep_int(n_probe,ref):
     array_Ad, array_Sd = array_Ad[ref:], array_Sd[ref:]  # removing the calibration
     array_Sd = baseline(array_Ad, array_Sd)
     return array_Ad, array_Sd
+
+
 def read_LCPS(filename):
-    data=[]
+    """
+    Read LCPS (Large Probe Cloud Particle Size Spectrometer) distribution data.
+
+    Parses the reference particle size distributions for Venus cloud layers
+    from the LCPS instrument measurements.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the LCPS distribution CSV file.
+
+    Returns
+    -------
+    list of dict
+        Each dict contains cloud layer parameters:
+        - 'array_Type': Cloud layer name
+        - 'array_MaxAlt', 'array_MinAlt': Altitude bounds in km
+        - 'NT1', 'S1', 'M1': Mode 1 parameters (count, sigma, mean)
+        - 'NT2', 'S2', 'M2': Mode 2 parameters (may be empty)
+        - 'NT3', 'S3', 'M3': Mode 3 parameters (may be empty)
+    """
+    data = []
     with open(filename, 'r') as csvfile:
         # reader = pd.read_csv(csvfile, usecols=['Particle Diameter', 'AFN Scattering Cross-section, parallel', 'AFN Scattering Cross-section, perpendicular'])
         # reader = pd.read_csv(csvfile)
@@ -79,7 +194,32 @@ def read_LCPS(filename):
                 'M3' : row['mean_g3'],
             })
     return data
-def alt_dist_modes(arr_A, arr_S,LCPS_dis):
+def alt_dist_modes(arr_A, arr_S, LCPS_dis):
+    """
+    Cluster measurements by altitude ranges defined in LCPS data.
+
+    Groups scattering measurements into cloud layers based on altitude
+    boundaries from the LCPS reference distributions.
+
+    Parameters
+    ----------
+    arr_A : array-like
+        Altitude measurements in km.
+    arr_S : array-like
+        Scattering intensity measurements.
+    LCPS_dis : str
+        Path to LCPS distribution CSV file.
+
+    Returns
+    -------
+    arr_A : list of lists
+        Altitude values grouped by cloud layer.
+    arr_S : list of lists
+        Scattering values grouped by cloud layer.
+    alt_d : list of lists
+        LCPS particle distribution parameters for each layer.
+        Each element: [NT1, S1, M1, NT2, S2, M2, NT3, S3, M3]
+    """
     # Clustering per Altitude ranges.
     alt_d = []
     cluster_A = []
@@ -117,20 +257,69 @@ def alt_dist_modes(arr_A, arr_S,LCPS_dis):
     arr_S=cluster_S
     return arr_A, arr_S, alt_d
 
+# =============================================================================
 # Forward Model Functions
+# =============================================================================
+
 def load_matrices_numpy(directory):
+    """
+    Load pre-computed Mie scattering matrices from disk.
+
+    Parameters
+    ----------
+    directory : str
+        Path to directory containing the matrix files.
+
+    Returns
+    -------
+    X : ndarray
+        Particle size grid (microns).
+    Y : ndarray
+        Refractive index grid.
+    Isca : ndarray
+        Scattering intensity matrix.
+    """
     Isca = np.load(os.path.join(directory, 'Isca_matrix.npy'))
     X = np.load(os.path.join(directory, 'X_matrix.npy'))
     Y = np.load(os.path.join(directory, 'Y_matrix.npy'))
-    return X,Y, Isca
-def bivariate_distribution(arr,X,Y):
-    # print('Entering Samp')
-    # xs = np.linspace(0.1, 20.0, 199)
-    # ys = np.linspace(1.25, 2.00, 750)
-    # x,y =np.meshgrid(xs,ys)
-    # x,y= np.mgrid[0.1:20.0:.1,1.25:2.00:.001]
-    # x, y = np.mgrid[0.1:20.0:1, 1.25:2.00:.1]
-    # pos = np.dstack((x, y))
+    return X, Y, Isca
+
+
+def bivariate_distribution(arr, X, Y):
+    """
+    Compute bivariate probability distribution over particle size and refractive index.
+
+    Evaluates a mixture of up to three bivariate distributions (modes) on the
+    particle size × refractive index grid. Modes 1 and 3 are log-normal in
+    both dimensions; Mode 2 is Gaussian.
+
+    Parameters
+    ----------
+    arr : array-like, shape (18,)
+        Distribution parameters:
+        [n1, sig1, mu1, n2, sig2, mu2, n3, sig3, mu3,
+         rho1, sigr1, mur1, rho2, sigr2, mur2, rho3, sigr3, mur3]
+
+        For each mode i:
+        - n_i : Particle number density
+        - sig_i : Geometric standard deviation (particle size)
+        - mu_i : Mean particle size (microns)
+        - rho_i : Correlation coefficient between size and RI
+        - sigr_i : Standard deviation (refractive index)
+        - mur_i : Mean refractive index
+
+        Use np.nan for unused modes.
+
+    X : ndarray
+        Particle size grid (microns).
+    Y : ndarray
+        Refractive index grid.
+
+    Returns
+    -------
+    prob_tot : ndarray
+        Probability density at each (X, Y) grid point (flattened).
+    """
     x_coords = X.ravel()  # ravel() is faster than flatten() for contiguous arrays
     y_coords = Y.ravel()
 
@@ -210,16 +399,79 @@ def bivariate_distribution_SLow(arr,X,Y):
         # prob_tot_grid = prob_tot.reshape(Y.shape)
     return prob_tot
 
-def hyper_Pioneer(theta,X,Y,Isca):
-    n = bivariate_distribution(theta,X,Y)
-    # I = Isca.flatten()
+def hyper_Pioneer(theta, X, Y, Isca):
+    """
+    Compute predicted nephelometer scattering intensity.
+
+    Integrates the particle distribution over the pre-computed Mie
+    scattering matrix to predict the total scattering signal.
+
+    Parameters
+    ----------
+    theta : array-like
+        Distribution parameters (18 values).
+    X : ndarray
+        Particle size grid.
+    Y : ndarray
+        Refractive index grid.
+    Isca : ndarray
+        Pre-computed scattering intensity matrix.
+
+    Returns
+    -------
+    float
+        Total predicted scattering intensity.
+    """
+    n = bivariate_distribution(theta, X, Y)
     I = Isca.ravel()
-    I_tot= np.sum(I*n)
+    I_tot = np.sum(I * n)
     return I_tot
 
+
+# =============================================================================
 # Nested Sampling Functions
+# =============================================================================
 
 def NS(likelihood, prior, numL, n_var, maxiter, checkpoint_dir, num_lay, type_samp='Static'):
+    """
+    Run nested sampling to estimate posterior distributions.
+
+    Supports three sampling modes:
+    - 'Static': Standard nested sampling with fixed live points
+    - 'Dynamic': Adaptive nested sampling that adjusts resolution
+    - 'Both': Combines results from static and dynamic runs
+
+    Parameters
+    ----------
+    likelihood : callable
+        Log-likelihood function: likelihood(theta) -> float
+    prior : callable
+        Prior transform function: prior(u) -> theta
+        Maps unit hypercube [0,1]^n to parameter space.
+    numL : int
+        Number of live points.
+    n_var : int
+        Number of parameters (dimensions).
+    maxiter : int
+        Maximum iterations / checkpoint interval.
+    checkpoint_dir : str
+        Directory for saving checkpoint files.
+    num_lay : int
+        Layer index (used for checkpoint filenames).
+    type_samp : str, optional
+        Sampling mode: 'Static', 'Dynamic', or 'Both'. Default is 'Static'.
+
+    Returns
+    -------
+    samples : ndarray
+        Posterior samples, shape (n_samples, n_var).
+    weights : ndarray
+        Sample weights (normalized posterior probability).
+
+    Notes
+    -----
+    Checkpoints are saved periodically to allow resuming interrupted runs.
+    """
     # initialize our nested sampler
     # print(f"\n=== INITIALIZING NESTED SAMPLER ===")
     # print(f"Type: {type_samp}")
@@ -286,13 +538,38 @@ def NS(likelihood, prior, numL, n_var, maxiter, checkpoint_dir, num_lay, type_sa
     return samples, weights
 
 def log_likelihood_bivar(thet, y_data, max_diff, X, Y, Isca):
-    # if not hasattr(log_likelihood_bivar, 'call_count'):
-    #     log_likelihood_bivar.call_count = 0
-    # log_likelihood_bivar.call_count += 1
-    #
-    # if log_likelihood_bivar.call_count % 10 == 0:
-    #     print(f"Likelihood called {log_likelihood_bivar.call_count} times")
-    n_T=thet[0]+thet[3]+thet[6]
+    """
+    Compute log-likelihood of parameters given observations.
+
+    Evaluates how well the model predictions match the observed
+    scattering measurements, assuming Gaussian errors.
+
+    Parameters
+    ----------
+    thet : array-like
+        Distribution parameters (18 values).
+    y_data : array-like
+        Observed scattering intensity values.
+    max_diff : float
+        Maximum difference in observations (used for error estimation).
+    X : ndarray
+        Particle size grid.
+    Y : ndarray
+        Refractive index grid.
+    Isca : ndarray
+        Pre-computed scattering matrix.
+
+    Returns
+    -------
+    float
+        Log-likelihood value. Returns -inf for invalid parameters.
+
+    Notes
+    -----
+    The measurement uncertainty is estimated as max_diff/6, which
+    corresponds to assuming the data range spans ~6 sigma.
+    """
+    n_T = thet[0] + thet[3] + thet[6]
     if n_T<=1:
         return -np.inf
     min_sig = 0.000005  # detector sensitivity limit
@@ -310,12 +587,35 @@ def log_likelihood_bivar(thet, y_data, max_diff, X, Y, Isca):
 
 
 def prior_NoLCPS(utheta):
-    # if not hasattr(prior_NoLCPS, 'call_count'):
-    #     prior_NoLCPS.call_count = 0
-    # prior_NoLCPS.call_count += 1
-    #
-    # if prior_NoLCPS.call_count % 6 == 0:  # Print every 100 calls
-    #     print(f"Prior function called {prior_NoLCPS.call_count} times")
+    """
+    Transform unit hypercube samples to physical parameter space.
+
+    Maps samples from the unit hypercube [0,1]^18 to the physical
+    parameter space using inverse CDF transforms. This is the prior
+    for the unconstrained (NoLCPS) retrieval.
+
+    Parameters
+    ----------
+    utheta : array-like, shape (18,)
+        Samples from the unit hypercube.
+
+    Returns
+    -------
+    list
+        Physical parameters in order:
+        [n1, sig1, mu1, n2, sig2, mu2, n3, sig3, mu3,
+         rho1, sigr1, mur1, rho2, sigr2, mur2, rho3, sigr3, mur3]
+
+    Notes
+    -----
+    Prior specifications:
+    - n (particle count): Uniform [0, 1000]
+    - sigma (size width): Uniform, mode-dependent ranges
+    - mu (mean size): Truncated normal, mode-dependent
+    - rho (correlation): Uniform [-0.999, 0.999]
+    - sigma_r (RI width): Uniform, mode-dependent
+    - mu_r (mean RI): Truncated normal centered at 1.43
+    """
     values_x = utheta
     # Particle Size
     n_1 = values_x[0] * 1000
@@ -375,8 +675,25 @@ def prior_NoLCPS(utheta):
 
 
 def create_matrices_directory_NoLCPS(ri_matrix, weight_matrix):
-    # pos_dis = os.path.join(base_path, "PosDistLayer{}.csv".format(layer_num))
-    # Get the dimensions of both matrices
+    """
+    Format posterior samples into a dictionary for CSV export.
+
+    Organizes the transposed sample array and weights into a dictionary
+    with named columns for each parameter.
+
+    Parameters
+    ----------
+    ri_matrix : array-like
+        Transposed posterior samples, shape (18, n_samples).
+    weight_matrix : array-like
+        Sample weights, shape (n_samples,).
+
+    Returns
+    -------
+    dict
+        Dictionary with parameter names as keys and sample arrays as values.
+        Ready for conversion to pandas DataFrame.
+    """
     data_dis = {'n 1': ri_matrix[0], 'sig 1': ri_matrix[1], 'mu 1': ri_matrix[2],
                 'n 2': ri_matrix[3], 'sig 2': ri_matrix[4], 'mu 2': ri_matrix[5],
                 'n 3': ri_matrix[6], 'sig 3': ri_matrix[7], 'mu 3': ri_matrix[8],
