@@ -188,9 +188,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-**[Your Name]**
-[Your Institution/Department]
-Email: [your.email@institution.edu]
+**M. Regina A. Moreno**
+Massachusetts Institute of Technology, Aeronautics and Astronautics Department and Department of Earth, Atmospheric and Planetary Sciences
+Email: mapodaca[AT]mit.edu
 
 ## Acknowledgments
 
